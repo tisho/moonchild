@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <title>Framer Frame</title>
+  <style>
+  </style>
+</head>
+<body spellcheck="false">
+  <script src="deps/framer.js"></script>
+  <script>
+  Framer.Bridge = (function() {
+    var layers = [], currentHighlight;
+
+    function getLayerForNodeId(id) {
+      var layer = _(layers).detect(function(tuple) {
+        return tuple[1].nodeId === id;
+      });
+
+      if (layer) {
+        return layer[0];
+      } else {
+        return null;
+      }
+    }
+
+    function broadcastChange(layer, metadata) {
+      window.postMessage({ message: 'layerUpdated', metadata: metadata, state: { x: layer.x, y: layer.y }}, '*');
+    }
+
+    function registerLayer(layer, metadata) {
+      var onChange = function(value) {
+        broadcastChange(layer, metadata);
+      }
+
+      layer.on('change:x', onChange);
+      layer.on('change:y', onChange);
+
+      layers.push([layer, metadata]);
+      return layer;
+    }
+
+    function highlightLayerForNodeId(id) {
+      var layer = getLayerForNodeId(id);
+
+      if (currentHighlight) {
+        currentHighlight.style.outline = 'none';
+      }
+
+      if (layer) {
+        layer.style.outline = '2px solid blue';
+        currentHighlight = layer;
+      }
+    }
+
+    return {
+      registerLayer: registerLayer,
+      highlightLayerForNodeId: highlightLayerForNodeId
+    }
+  })();
+  </script>
+</body>
+</html>

@@ -1,9 +1,7 @@
+var options = {};
+var codeMirror;  // TODO: Get rid of this global.
 var moonchild = Moonchild.registerExtension();
 Moonchild.setEditor(new Editor());
-
-var options = {};
-
-var codeMirror;  // TODO: Get rid of this global. 
 
 // Private helpers
 // ---------------
@@ -20,6 +18,7 @@ function toggle(el, value) {
     el.classList.toggle('on', value);
   else
     el.classList.toggle('on')
+
   options[el.id] = el.classList.contains('on');
 }
 
@@ -40,10 +39,11 @@ function initializeExtensionToggles(cm) {
 
 function renderNode(cm, node) {
   var widgetInfo = moonchild.getWidget(node);
-  if (widgetInfo)
+  if (widgetInfo) {
     renderWidget(cm, node, widgetInfo);
-  else
+  } else {
     clearWidgets(cm, node);
+  }
 }
 
 // Editor
@@ -71,6 +71,15 @@ function Editor() {
   });
 
   initializeExtensionToggles(codeMirror);
+
+  setTimeout(function() {
+    toggle($('#preview'));
+    Moonchild.onChange(codeMirror.getValue());
+  }, 500);
+}
+
+Editor.prototype.getValue = function() {
+  return this._codeMirror.getValue();
 }
 
 Editor.prototype.replaceRange = function(fromOffset, toOffset, text) {
@@ -83,4 +92,8 @@ Editor.prototype.insertText = function(offset, text) {
 
 Editor.prototype.replaceNodeText = function(node, text) {
   this.replaceRange(esLocToCm(node.loc.start), esLocToCm(node.loc.end), text);
+}
+
+Editor.prototype.selectNode = function(node) {
+  selectNode(this._codeMirror, node);
 }

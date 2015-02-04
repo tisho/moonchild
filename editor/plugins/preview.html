@@ -1,0 +1,313 @@
+<style>
+.framer-layer-declaration {
+}
+
+.framer-layer-declaration-hover {
+  text-decoration: underline;
+}
+
+</style>
+<script>
+Moonchild.registerExtension('preview', function(moonchild) {
+  var frame = null;
+  var actualSource = '', transformedSource = '';
+  var counter = 0;
+  var layers = [];
+  var shouldPreview = true;
+
+  function onFrameMessage(event) {
+    if (event.data && event.data.message === 'layerUpdated') {
+      var data = event.data;
+      var layer = getLayerForName(data.metadata.name);
+      var propsByName = _.indexBy(layer.properties, function(p) { return p.key.name });
+      for (prop in data.state) {
+        var p = propsByName[prop];
+        if (p) {
+          updateProperty(p, data.state[prop]);
+        }
+      }
+    }
+  }
+
+  function preview() {
+    if (!frame) {
+      frame = document.getElementById('framerFrame');
+      frame.onload = function() {
+        frame.contentWindow.eval(transformedSource);
+        frame.contentWindow.addEventListener('message', _.debounce(onFrameMessage, 250), false);
+      }
+    }
+
+    if (shouldPreview) {
+      frame.contentWindow.location.reload();
+    }
+  }
+
+  function getSourceForRange(chunks, range) {
+    return chunks.slice(range[0], range[1]).join('');
+  }
+
+  function replaceSourceAtRange(chunks, range, value) {
+    chunks[range[0]] = value;
+    for (var i = range[0] + 1; i < range[1]; i++) {
+      chunks[i] = '';
+    }
+  }
+
+  function getIdentifierForLayerDeclaration(node) {
+    if (node.type === 'VariableDeclarator') {
+      return node.id;
+    }
+
+    if (node.type === 'AssignmentExpression') {
+      return node.left;
+    }
+  }
+
+  function getDeclarationForLayerDeclaration(node) {
+    if (node.type === 'VariableDeclarator') {
+      return node.init;
+    }
+
+    if (node.type === 'AssignmentExpression') {
+      return node.right;
+    }
+  }
+
+  function isNewLayerExpression(node) {
+    return node.type === 'NewExpression' &&
+           node.callee.name === 'Layer';
+  }
+
+  function isLayerDeclaration(node) {
+    return  (node.type === 'VariableDeclarator' &&
+            node.init && isNewLayerExpression(node.init)) ||
+            (node.type === 'AssignmentExpression' &&
+            isNewLayerExpression(node.right));
+  }
+
+  function jsonMetadataForLayerDeclaration(node) {
+    var identifier = getIdentifierForLayerDeclaration(node);
+    var extras = moonchild.getExtras(identifier);
+    var metadata = { name: identifier.name, nodeId: extras.nodeId };
+    return JSON.stringify(metadata);
+  }
+
+  function injectLayerTracers(ast, source) {
+    var chunks = source.split('');
+
+    ast.filter(isLayerDeclaration).each(function(node) {
+      var identifier = getIdentifierForLayerDeclaration(node);
+      var extras = { type: 'layerDeclarationIdentifier', nodeId: 'layer-declaration-'+(counter++) };
+      moonchild.setExtras(identifier, extras);
+
+      var declaration = getDeclarationForLayerDeclaration(node);
+      var declarationSource = getSourceForRange(chunks, declaration.range);
+      var metadata = jsonMetadataForLayerDeclaration(node);
+      var traced = 'Framer.Bridge.registerLayer('+declarationSource+', '+metadata+');'
+      replaceSourceAtRange(chunks, declaration.range, traced);
+    })
+
+    return chunks.join('');
+  }
+
+  function getPropertiesInDeclaration(node) {
+    var declaration = getDeclarationForLayerDeclaration(node);
+    return declaration.arguments[0].properties;
+  }
+
+  function highlightLayerForNodeId(id) {
+    frame.contentWindow.eval('Framer.Bridge.highlightLayerForNodeId("'+id+'")')
+  }
+
+  var LayerHighlightWidget = Moonchild.Widget.extend({
+    create: function(node) {
+      var el = createElement('span');
+      el.classList.add('framer-layer-declaration');
+
+      var self = this;
+      el.addEventListener('mouseenter', function() {
+        el.classList.add('framer-layer-declaration-hover');
+        self.highlight();
+      });
+
+      el.addEventListener('mouseleave', function() {
+        el.classList.remove('framer-layer-declaration-hover');
+        self.unhighlight();
+      });
+
+      return el;
+    },
+
+    highlight: function() {
+      highlightLayerForNodeId(this._nodeId);
+    },
+
+    unhighlight: function() {
+      frame.contentWindow.eval('Framer.Bridge.highlightLayerForNodeId(null)');
+    },
+
+    render: function(el, node) {
+      this._node = node;
+      var extras = moonchild.getExtras(node);
+      this._nodeId = extras.nodeId;
+
+      el.textContent = node.name;
+    }
+  })
+
+  var layerList, layerProperties;
+  var selectedLayer;
+
+  function updateLayerList(newLayers) {
+    if (!layerList) {
+      layerList = $('#layer-list');
+      layerList.addEventListener('click', function(event) {
+        var target = event.target;
+        if (event.target.tagName.toLowerCase() === 'li') {
+          selectLayer(event.target);
+        }
+      })
+    }
+
+    var oldLayerNames = _.pluck(layers, 'name');
+    var newLayersByName = _.indexBy(newLayers, 'name');
+    var newLayerNames = _.keys(newLayersByName);
+
+    var toUpdate = _.intersection(oldLayerNames, newLayerNames);
+    var toRemove = _.difference(oldLayerNames, newLayerNames);
+    var toAdd = _.difference(newLayerNames, oldLayerNames);
+
+    var lis = layerList.querySelectorAll('li');
+    for (var i=lis.length-1; i >= 0; i--) {
+      var layer = lis[i]._layer;
+      if (_.contains(toRemove, layer.name)) {
+        lis.removeChild(lis[i]);
+      }
+
+      if (_.contains(toUpdate, layer.name)) {
+        lis[i]._layer = newLayersByName[layer.name];
+      }
+
+      if (selectedLayer && selectedLayer.name === layer.name) {
+        selectLayer(lis[i]);
+      }
+    }
+
+    var fragment = document.createDocumentFragment();
+    for (var i=0, l=toAdd.length; i < l; i++) {
+      var layer = _.findWhere(newLayers, { name: toAdd[i] });
+      var name = layer.name;
+      var li = document.createElement('li');
+      li._layer = layer;
+      li.innerHTML = name;
+      fragment.appendChild(li);
+    }
+
+    layerList.appendChild(fragment);
+    layers = newLayers;
+  }
+
+  function getLayerForNodeId(id) {
+    return _(layers).detect(function(layer) { return layer.nodeId === id; });
+  }
+
+  function getLayerForName(name) {
+    return _(layers).detect(function(layer) { return layer.name === name; });
+  }
+
+  function updateProperty(prop, value) {
+    if (prop.value.raw !== value) {
+      Moonchild.getEditor().replaceNodeText(prop.value, value.toString());
+    }
+  }
+
+  function updatePropertyFromInput(event) {
+    updateProperty(this._prop, this.value);
+  }
+
+  function selectLayer(el) {
+    _.each($$('#layer-list li'), function(li) { li.classList.remove('selected') });
+    el.classList.add('selected');
+    var layer = el._layer;
+    var name = layer.name;
+    var propsByName = _.indexBy(layer.properties, function(p) { return p.key.name });
+
+    var layerProperties = $('#layer-properties');
+    var lis = layerProperties.querySelectorAll('li');
+    var toAdd = [], toUpdate = [], toRemove = [];
+
+    var currentPropNames = [];
+    for (var i=lis.length - 1; i >= 0; i--) {
+        var li = lis[i];
+        var prop = li._prop;
+        if (propsByName[prop.key.name]) {
+          // updated property
+          var input = li.querySelector('input');
+          li._prop = input._prop = propsByName[prop.key.name];
+          if (input.value != li._prop.value.value) {
+            input.value = li._prop.value.value;
+          }
+          currentPropNames.push(prop.key.name);
+        } else {
+          // remove property
+          layerProperties.removeChild(li);
+        }
+    }
+
+    var newPropertyNames = _.difference(_.keys(propsByName), currentPropNames);
+
+    if (newPropertyNames.length) {
+      var fragment = document.createDocumentFragment();
+      for(var i=0, l=newPropertyNames.length; i<l; i++) {
+        // add property
+        var prop = propsByName[newPropertyNames[i]];
+        var li = document.createElement('li');
+        li._prop = prop;
+        li.innerHTML = template('{{name}}: <input value="{{value}}">', { name: prop.key.name, value: prop.value.value })
+        fragment.appendChild(li);
+        var input = li.querySelector('input');
+        input._prop = prop;
+        input.addEventListener('keyup', updatePropertyFromInput);
+      }
+
+      layerProperties.appendChild(fragment);
+    }
+    selectedLayer = layer;
+  }
+
+  function addLayer(layer) {
+    // attempt to match by name
+    var match = getLayerForName(layer.name);
+    if (match) {
+      match.nodeId = layer.nodeId;
+      match.properties = layer.properties;
+      match.node = layer.node;
+      match.identifier = layer.identifier;
+    } else {
+      layers.push(layer);
+    }
+  }
+
+  moonchild.on('parse', function(ast, comments) {
+    actualSource = Moonchild.getEditor().getValue();
+    transformedSource = injectLayerTracers(ast, actualSource);
+    preview();
+  });
+
+  moonchild.on('display', function(ast, comments) {
+    var newLayers = [];
+
+    ast.filter(isLayerDeclaration).each(function(node) {
+      var identifier = getIdentifierForLayerDeclaration(node);
+      var props = getPropertiesInDeclaration(node);
+      var extras = moonchild.getExtras(identifier);
+      newLayers.push({ name: identifier.name, identifier: identifier, node: node, properties: props, nodeId: extras.nodeId });
+
+      moonchild.addWidget(moonchild.REPLACE, identifier, LayerHighlightWidget);
+    });
+
+    updateLayerList(newLayers);
+  });
+});
+</script>
